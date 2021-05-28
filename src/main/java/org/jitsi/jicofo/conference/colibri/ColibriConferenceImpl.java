@@ -390,6 +390,7 @@ public class ColibriConferenceImpl
             Stanza reply = UtilKt.sendIqAndGetResponse(connection, request);
             long end = System.nanoTime();
             stats.allocateChannelsRequestTook(end - start);
+            logger.info("Allocate channel took " + Math.round((end - start) / 1e6) + "ms");
             return reply;
         }
         catch (SmackException.NotConnectedException e)
