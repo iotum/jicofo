@@ -17,11 +17,13 @@
  */
 package org.jitsi.jicofo;
 
+import org.jetbrains.annotations.*;
 import org.jitsi.impl.protocol.xmpp.*;
 import org.jitsi.jicofo.bridge.*;
 import org.jitsi.jicofo.jibri.*;
 import org.jitsi.jicofo.xmpp.*;
 import org.jitsi.jicofo.xmpp.muc.*;
+import org.jitsi.utils.*;
 import org.jitsi.xmpp.extensions.jibri.*;
 import org.jxmpp.jid.*;
 
@@ -99,5 +101,45 @@ public interface JitsiMeetConference
      * Whether this conference should be considered when generating statistics.
      */
     boolean includeInStatistics();
-    IqProcessingResult handleJibriRequest(IqRequest<JibriIq> request);
+
+    /**
+     * Process a Jibri-related IQ. This could be a request coming from the client, or from a jibri instance.
+     * If the request is not related to this conference, this should return {@link IqProcessingResult.NotProcessed}.
+     */
+    @NotNull IqProcessingResult handleJibriRequest(@NotNull IqRequest<JibriIq> request);
+
+    /**
+     * Used for av moderation, when we want to mute all participants that are not moderators.
+     * @param mediaType the media type we want to mute.
+     */
+    void muteAllNonModeratorParticipants(MediaType mediaType);
+
+    /**
+     * Return {@code true} if the user with the given JID should be allowed to invite jigasi to this conference.
+     */
+    boolean acceptJigasiRequest(@NotNull Jid from);
+
+    /**
+     * Handle a request to mute or unmute a participant. May block for a response from jitsi-videobridge.
+     * @param muterJid MUC jid of the participant that requested mute status change, or {@code null}. When {@code null},
+     * no permission checks will be performed.
+     * @param toBeMutedJid MUC jid of the participant whose mute status will be changed.
+     * @param doMute {@code true} to mute, {@code false} to unmute.
+     * @param mediaType the {@link MediaType} of the channel to mute, either AUDIO or VIDEO.
+     * @return {@link JitsiMeetConferenceImpl.MuteResult#NOT_ALLOWED} if {@code muterJid} is not allowed to mute/unmute,
+     * {@link JitsiMeetConferenceImpl.MuteResult#ERROR} if the operation was not successful, and
+     * {@link JitsiMeetConferenceImpl.MuteResult#SUCCESS} if it was successful.
+     */
+    @NotNull
+    JitsiMeetConferenceImpl.MuteResult handleMuteRequest(
+            Jid muterJid,
+            Jid toBeMutedJid,
+            boolean doMute,
+            MediaType mediaType);
+
+    /**
+     * Handles used chat room being destroyed.
+     * @param reason the reason for it.
+     */
+    void handleRoomDestroyed(String reason);
 }

@@ -21,6 +21,7 @@ import org.jetbrains.annotations.*;
 import org.jitsi.jicofo.*;
 import org.jitsi.jicofo.xmpp.*;
 import org.jitsi.jicofo.xmpp.muc.*;
+import org.jitsi.utils.*;
 import org.jitsi.utils.logging2.*;
 
 import org.jivesoftware.smack.*;
@@ -74,6 +75,11 @@ public class ChatRoomImpl
      * {@link MemberListener} instance.
      */
     private final MemberListener memberListener = new MemberListener();
+
+    /**
+     * {@link LocalUserStatusListener} instance.
+     */
+    private final LocalUserStatusListener userListener = new LocalUserStatusListener();
 
     /**
      * Listener for presence that smack sends on our behalf.
@@ -140,6 +146,13 @@ public class ChatRoomImpl
     private String meetingId = null;
 
     /**
+     * Indicates whether A/V Moderation is enabled for this room.
+     */
+    private Map<MediaType, Boolean> avModerationEnabled = new HashMap<>();
+
+    private Map<String, List<String>> whitelists = new HashMap<>();
+
+    /**
      * Creates new instance of <tt>ChatRoomImpl</tt>.
      *
      * @param roomJid the room JID (e.g. "room@service").
@@ -156,6 +169,7 @@ public class ChatRoomImpl
         muc = manager.getMultiUserChat(this.roomJid);
 
         muc.addParticipantStatusListener(memberListener);
+        muc.addUserStatusListener(userListener);
         muc.addParticipantListener(this);
     }
 
@@ -240,6 +254,10 @@ public class ChatRoomImpl
         if (meetingIdField != null)
         {
             meetingId = meetingIdField.getValues().stream().findFirst().orElse(null);
+            if (meetingId != null)
+            {
+                logger.addContext("meeting_id", meetingId);
+            }
         }
 
         Form answer = config.createAnswerForm();
@@ -298,6 +316,7 @@ public class ChatRoomImpl
             }
 
             muc.removeParticipantStatusListener(memberListener);
+            muc.removeUserStatusListener(userListener);
             muc.removeParticipantListener(this);
 
             if (leaveCallback != null)
@@ -844,6 +863,48 @@ public class ChatRoomImpl
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
+    public boolean isAvModerationEnabled(MediaType mediaType)
+    {
+        Boolean value = this.avModerationEnabled.get(mediaType);
+
+        // must be non null and true
+        return value != null && value;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public void setAvModerationEnabled(MediaType mediaType, boolean value)
+    {
+        this.avModerationEnabled.put(mediaType, value);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public void updateAvModerationWhitelists(@NotNull Map<String, List<String>> whitelists)
+    {
+        this.whitelists = whitelists;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public boolean isMemberAllowedToUnmute(Jid jid, MediaType mediaType)
+    {
+        if (!this.isAvModerationEnabled(mediaType))
+        {
+            return true;
+        }
+
+        List<String> whitelist = this.whitelists.get(mediaType.toString());
+
+        return whitelist == null ? false : whitelist.contains(jid.toString());
+    }
+
     class MemberListener
         implements ParticipantStatusListener
     {
@@ -1085,6 +1146,67 @@ public class ChatRoomImpl
 
                 addMember(newNickname);
             }*/
+        }
+    }
+
+    /**
+     * Listens for room destroyed and pass it to the conference.
+     */
+    class LocalUserStatusListener
+        implements UserStatusListener
+    {
+        @Override
+        public void kicked(Jid actor, String reason)
+        {}
+
+        @Override
+        public void voiceGranted()
+        {}
+
+        @Override
+        public void voiceRevoked()
+        {}
+
+        @Override
+        public void banned(Jid actor, String reason)
+        {}
+
+        @Override
+        public void membershipGranted()
+        {}
+
+        @Override
+        public void membershipRevoked()
+        {}
+
+        @Override
+        public void moderatorGranted()
+        {}
+
+        @Override
+        public void moderatorRevoked()
+        {}
+
+        @Override
+        public void ownershipGranted()
+        {}
+
+        @Override
+        public void ownershipRevoked()
+        {}
+
+        @Override
+        public void adminGranted()
+        {}
+
+        @Override
+        public void adminRevoked()
+        {}
+
+        @Override
+        public void roomDestroyed(MultiUserChat alternateMUC, String reason)
+        {
+            ChatRoomImpl.this.conference.handleRoomDestroyed(reason);
         }
     }
 }

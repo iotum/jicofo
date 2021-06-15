@@ -49,6 +49,7 @@ import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 import java.util.stream.*;
 
+import static org.jitsi.jicofo.JitsiMeetConferenceImpl.MuteResult.*;
 import static org.jitsi.jicofo.xmpp.IqProcessingResult.*;
 import static org.apache.commons.lang3.StringUtils.*;
 
@@ -105,20 +106,6 @@ public class JitsiMeetConferenceImpl
      */
     @NotNull
     private final JitsiMeetConfig config;
-
-    /**
-     * The XMPP provider for the connection to clients (endpoints). It is currently also used to communicate with
-     * jibri and jigasi, but that may change.
-     */
-    @NotNull
-    private final XmppProvider clientXmppProvider;
-
-    /**
-     * The XMPP provider for the service connection (currently used only for bridges, but may later be used for
-     * jigasi and jibri as well). This may be the same instance as {@link #clientXmppProvider}.
-     */
-    @NotNull
-    private final XmppProvider serviceXmppProvider;
 
     /**
      * Conference room chat instance.
@@ -242,8 +229,6 @@ public class JitsiMeetConferenceImpl
      */
     public JitsiMeetConferenceImpl(
             @NotNull EntityBareJid roomName,
-            @NotNull XmppProvider clientXmppProvider,
-            @NotNull XmppProvider serviceXmppProvider,
             ConferenceListener listener,
             @NotNull JitsiMeetConfig config,
             Level logLevel,
@@ -253,8 +238,6 @@ public class JitsiMeetConferenceImpl
         logger = new LoggerImpl(JitsiMeetConferenceImpl.class.getName(), logLevel);
         logger.addContext("room", roomName.toString());
 
-        this.clientXmppProvider = clientXmppProvider;
-        this.serviceXmppProvider = serviceXmppProvider;
         this.config = config;
 
         this.gid = gid;
@@ -271,14 +254,12 @@ public class JitsiMeetConferenceImpl
 
     public JitsiMeetConferenceImpl(
             @NotNull EntityBareJid roomName,
-            @NotNull XmppProvider clientXmppProvider,
-            @NotNull XmppProvider serviceXmppProvider,
             ConferenceListener listener,
             @NotNull JitsiMeetConfig config,
             Level logLevel,
             long gid)
     {
-       this(roomName, clientXmppProvider, serviceXmppProvider, listener, config, logLevel, gid, false);
+       this(roomName, listener, config, logLevel, gid, false);
     }
 
     /**
@@ -300,6 +281,7 @@ public class JitsiMeetConferenceImpl
 
         try
         {
+            XmppProvider clientXmppProvider = getClientXmppProvider();
             jingle = clientXmppProvider.getJingleApi();
 
             // Wraps OperationSetJingle in order to introduce our nasty "lip-sync" hack. Note that lip-sync will only
@@ -369,11 +351,11 @@ public class JitsiMeetConferenceImpl
         {
             try
             {
-                jibriSipGateway.dispose();
+                jibriSipGateway.shutdown();
             }
             catch (Exception e)
             {
-                logger.error("jibriSipGateway.dispose error", e);
+                logger.error("jibriSipGateway.shutdown error", e);
             }
             jibriSipGateway = null;
         }
@@ -382,16 +364,16 @@ public class JitsiMeetConferenceImpl
         {
             try
             {
-                jibriRecorder.dispose();
+                jibriRecorder.shutdown();
             }
             catch (Exception e)
             {
-                logger.error("jibriRecorder.dispose error", e);
+                logger.error("jibriRecorder.shutdown error", e);
             }
             jibriRecorder = null;
         }
 
-        clientXmppProvider.removeRegistrationListener(this);
+        getClientXmppProvider().removeRegistrationListener(this);
 
         BridgeSelector bridgeSelector = jicofoServices.getBridgeSelector();
         bridgeSelector.removeHandler(bridgeSelectorEventHandler);
@@ -451,20 +433,24 @@ public class JitsiMeetConferenceImpl
     {
         logger.info("Joining " + roomName);
 
-        chatRoom = clientXmppProvider.findOrCreateRoom(roomName);
+        chatRoom = getClientXmppProvider().findOrCreateRoom(roomName);
         chatRoom.setConference(this);
 
         rolesAndPresence = new ChatRoomRoleAndPresence(this, chatRoom, logger);
         rolesAndPresence.init();
 
         transcriberManager = new TranscriberManager(
-            clientXmppProvider,
+            getClientXmppProvider(),
             this,
-            jicofoServices.getJigasiDetector(),
+            jicofoServices.getXmppServices().getJigasiDetector(),
             logger);
         transcriberManager.init();
 
         chatRoom.join();
+        if (chatRoom.getMeetingId() != null)
+        {
+            logger.addContext("meeting_id", chatRoom.getMeetingId());
+        }
 
         Collection<ExtensionElement> presenceExtensions = new ArrayList<>();
 
@@ -632,7 +618,9 @@ public class JitsiMeetConferenceImpl
     @SuppressFBWarnings("NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE")
     private ColibriConference createNewColibriConference(Jid bridgeJid)
     {
-        ColibriConferenceImpl colibriConference = new ColibriConferenceImpl(serviceXmppProvider.getXmppConnection());
+        ColibriConferenceImpl colibriConference
+                = new ColibriConferenceImpl(
+                        jicofoServices.getXmppServices().getServiceConnection().getXmppConnection());
         // JVB expects the hex string
         colibriConference.setGID(Long.toHexString(gid));
 
@@ -2089,7 +2077,7 @@ public class JitsiMeetConferenceImpl
     @NotNull
     public XmppProvider getClientXmppProvider()
     {
-        return clientXmppProvider;
+        return jicofoServices.getXmppServices().getClientConnection();
     }
 
     public ChatRoomMember findMember(Jid from)
@@ -2119,26 +2107,26 @@ public class JitsiMeetConferenceImpl
     }
 
     /**
-     * Handles mute request sent from participants.
-     * @param muterJid MUC jid of the participant that requested mute status change.
-     * @param toBeMutedJid MUC jid of the participant whose mute status will be changed (eventually).
-     * @param doMute the new audio mute status to set.
-     * @param mediaType optional mediaType of the channel to mute, defaults to AUDIO.
-     * @return <tt>true</tt> if status has been set successfully.
+     * {@inheritDoc}
      */
+    @Override
+    @NotNull
     public MuteResult handleMuteRequest(Jid muterJid, Jid toBeMutedJid, boolean doMute, MediaType mediaType)
     {
-        Participant muter = findParticipantForRoomJid(muterJid);
-        if (muter == null)
+        if (muterJid != null)
         {
-            logger.warn("Muter participant not found, jid=" + muterJid);
-            return MuteResult.ERROR;
-        }
-        // Only moderators can mute others
-        if (!muterJid.equals(toBeMutedJid) && !muter.getChatMember().getRole().hasModeratorRights())
-        {
-            logger.warn("Mute not allowed for non-moderator " + muterJid);
-            return MuteResult.NOT_ALLOWED;
+            Participant muter = findParticipantForRoomJid(muterJid);
+            if (muter == null)
+            {
+                logger.warn("Muter participant not found, jid=" + muterJid);
+                return MuteResult.ERROR;
+            }
+            // Only moderators can mute others
+            if (!muterJid.equals(toBeMutedJid) && !muter.getChatMember().getRole().hasModeratorRights())
+            {
+                logger.warn("Mute not allowed for non-moderator " + muterJid);
+                return MuteResult.NOT_ALLOWED;
+            }
         }
 
         Participant participant = findParticipantForRoomJid(toBeMutedJid);
@@ -2148,11 +2136,20 @@ public class JitsiMeetConferenceImpl
             return MuteResult.ERROR;
         }
 
-        // do not allow unmuting other participants even for the moderator
-        if (!doMute && !muterJid.equals(toBeMutedJid))
+        // process unmuting
+        if (!doMute)
         {
-            logger.warn("Unmute now allowed, mutedJid=" + muterJid + ", toBeMutedJid=" + toBeMutedJid);
-            return MuteResult.NOT_ALLOWED;
+            // do not allow unmuting other participants even for the moderator
+            if (muterJid == null || !muterJid.equals(toBeMutedJid))
+            {
+                logger.warn("Unmute not allowed, muterJid=" + muterJid + ", toBeMutedJid=" + toBeMutedJid);
+                return MuteResult.NOT_ALLOWED;
+            }
+            else if (!this.chatRoom.isMemberAllowedToUnmute(toBeMutedJid, mediaType))
+            {
+                logger.warn("Unmute not allowed due to av moderation for jid=" + toBeMutedJid);
+                return MuteResult.NOT_ALLOWED;
+            }
         }
 
         if (doMute
@@ -2170,7 +2167,8 @@ public class JitsiMeetConferenceImpl
             return MuteResult.NOT_ALLOWED;
         }
 
-        logger.info("Will " + (doMute ? "mute" : "unmute") + " " + toBeMutedJid + " on behalf of " + muterJid);
+        logger.info("Will " + (doMute ? "mute" : "unmute") + " " + toBeMutedJid + " on behalf of " + muterJid
+            + " for " + mediaType);
 
         BridgeSession bridgeSession = findBridgeSession(participant);
         ColibriConferenceIQ participantChannels = participant.getColibriChannelsInfo();
@@ -2183,8 +2181,75 @@ public class JitsiMeetConferenceImpl
         {
             logger.warn("Failed to mute, bridgeSession=" + bridgeSession + ", pc=" + participantChannels);
         }
+        else
+        {
+            participant.setMuted(mediaType, doMute);
+        }
 
         return succeeded ? MuteResult.SUCCESS : MuteResult.ERROR;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public void muteAllNonModeratorParticipants(MediaType mediaType)
+    {
+        Iterable<Participant> participantsToMute;
+        synchronized (participantLock)
+        {
+            participantsToMute = new ArrayList<>(participants);
+        }
+
+        for (Participant participant : participantsToMute)
+        {
+            muteParticipant(participant, mediaType);
+        }
+    }
+
+    /**
+     * Mutes a participant.
+     * @param participant the participant to mute. We mute only participants which are not moderators
+     *                    and hasn't been already muted.
+     * @param mediaType the media type for the operation.
+     */
+    public void muteParticipant(Participant participant, MediaType mediaType)
+    {
+        boolean isParticipantModerator = participant.getChatMember().getRole().hasModeratorRights();
+        if (isParticipantModerator || participant.isMuted(mediaType))
+        {
+            return;
+        }
+
+        MuteResult result = handleMuteRequest(null, participant.getMucJid(), true, mediaType);
+        if (result == SUCCESS)
+        {
+            IQ muteIq = null;
+            if (mediaType == MediaType.AUDIO)
+            {
+                MuteIq muteStatusUpdate = new MuteIq();
+                muteStatusUpdate.setType(IQ.Type.set);
+                muteStatusUpdate.setTo(participant.getMucJid());
+
+                muteStatusUpdate.setMute(true);
+
+                muteIq = muteStatusUpdate;
+            }
+            else if (mediaType == MediaType.VIDEO)
+            {
+                MuteVideoIq muteStatusUpdate = new MuteVideoIq();
+                muteStatusUpdate.setType(IQ.Type.set);
+                muteStatusUpdate.setTo(participant.getMucJid());
+
+                muteStatusUpdate.setMute(true);
+
+                muteIq = muteStatusUpdate;
+            }
+
+            if (muteIq != null)
+            {
+                UtilKt.tryToSendStanza(getClientXmppProvider().getXmppConnection(), muteIq);
+            }
+        }
     }
 
     /**
@@ -2511,6 +2576,13 @@ public class JitsiMeetConferenceImpl
         return result;
     }
 
+    @Override
+    public boolean acceptJigasiRequest(@NotNull Jid from)
+    {
+        MemberRole role = getRoleForMucJid(from);
+        return role != null && role.hasModeratorRights();
+    }
+
     private FocusManager getFocusManager()
     {
         return jicofoServices.getFocusManager();
@@ -2524,6 +2596,17 @@ public class JitsiMeetConferenceImpl
     public JibriSipGateway getJibriSipGateway()
     {
         return jibriSipGateway;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void handleRoomDestroyed(String reason)
+    {
+        logger.info("Room destroyed with reason=" + reason);
+
+        stop();
     }
 
     /**
@@ -2642,7 +2725,7 @@ public class JitsiMeetConferenceImpl
         private void dispose()
         {
             // We will not expire channels if the bridge is faulty or when our connection is down.
-            if (!hasFailed && clientXmppProvider.isRegistered())
+            if (!hasFailed && getClientXmppProvider().isRegistered())
             {
                 colibriConference.expireConference();
             }

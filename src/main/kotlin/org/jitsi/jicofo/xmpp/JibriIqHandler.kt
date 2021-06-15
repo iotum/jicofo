@@ -18,14 +18,12 @@
 package org.jitsi.jicofo.xmpp
 
 import org.jitsi.jicofo.ConferenceStore
-import org.jitsi.jicofo.EmptyConferenceStore
 import org.jitsi.jicofo.jibri.BaseJibri
-import org.jitsi.jicofo.util.ErrorResponse
 import org.jitsi.jicofo.xmpp.IqProcessingResult.AcceptedWithNoResponse
 import org.jitsi.jicofo.xmpp.IqProcessingResult.AcceptedWithResponse
 import org.jitsi.jicofo.xmpp.IqProcessingResult.RejectedWithError
 import org.jitsi.xmpp.extensions.jibri.JibriIq
-import org.jivesoftware.smack.XMPPConnection
+import org.jivesoftware.smack.AbstractXMPPConnection
 import org.jivesoftware.smack.iqrequest.IQRequestHandler
 import org.jivesoftware.smack.packet.IQ
 import org.jivesoftware.smack.packet.XMPPError
@@ -35,7 +33,8 @@ import org.jivesoftware.smack.packet.XMPPError
  * handling to specific [BaseJibri] instances.
  */
 class JibriIqHandler(
-    connections: Set<XMPPConnection>
+    connections: Set<AbstractXMPPConnection>,
+    private val conferenceStore: ConferenceStore
 ) :
     AbstractIqHandler<JibriIq>(
         connections,
@@ -44,7 +43,6 @@ class JibriIqHandler(
         setOf(IQ.Type.set),
         IQRequestHandler.Mode.sync
     ) {
-    var conferenceStore: ConferenceStore = EmptyConferenceStore()
 
     /**
      * {@inheritDoc}
@@ -58,11 +56,10 @@ class JibriIqHandler(
         conferenceStore.getAllConferences().forEach { conference ->
             when (val result = conference.handleJibriRequest(request)) {
                 is AcceptedWithResponse, is AcceptedWithNoResponse, is RejectedWithError -> return result
-                else -> Unit
             }
         }
 
         // No conference accepted the request.
-        return RejectedWithError(ErrorResponse.create(request.iq, XMPPError.Condition.item_not_found, null))
+        return RejectedWithError(request, XMPPError.Condition.item_not_found)
     }
 }
