@@ -50,6 +50,7 @@ import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 import java.util.stream.*;
 
+import static org.apache.commons.lang3.StringUtils.*;
 import static org.jitsi.jicofo.xmpp.IqProcessingResult.*;
 
 /**
@@ -615,6 +616,38 @@ public class JitsiMeetConferenceImpl
      */
     private void onMemberJoined(@NotNull ChatRoomMember chatRoomMember)
     {
+        // ICC Extension:
+        // If a connection fails to tear down normally, and the user reconnects,
+        // other participants cannot easily figure out which media track is real.
+        // Scan the existing participants and drop those who have the same ID.
+        String iccId = chatRoomMember.getStatsId();
+        if (isNumeric(iccId))
+        {
+            for (final Participant participant : participants.values())
+            {
+                try
+                {
+                    if (iccId.compareTo(participant.getStatId()) == 0)
+                    {
+                        // the same user is joining again, remove the old member
+                        // ChatMember[<room>@<domain>/<pin-id>, jid: <jid>]
+                        logger.info(
+                                "ICC: dropping stale "
+                                    + participant.getChatMember());
+                        terminateParticipant(
+                            participant,
+                            Reason.EXPIRED,
+                            "stale user",
+                            /* send session-terminate */ true,
+                            /* send source-remove */ false);
+                    }
+                }
+                catch (Exception e)
+                {
+                }
+            }
+        }
+
         synchronized (participantLock)
         {
             logger.info(
