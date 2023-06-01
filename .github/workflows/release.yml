@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Target tag'
+        required: false
+        type: string
+  pull_request:
+    branches:
+      - master
+
+env:
+  # Java version to use for the release
+  RELEASE_JAVA_VERSION: 8
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        java: [ 11, 17 ]
+
+    name: Java ${{ matrix.java }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Set up JDK ${{ matrix.java }}
+        uses: actions/setup-java@v2
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+
+      - name: Build with Maven
+        run: mvn package -B -D maven.test.skip=true -D assembly.skipAssembly=false
+
+      - uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ inputs.tag }}
+          prerelease: true
+          fail_on_unmatched_files: true
+          files: |
+            jicofo/target/jicofo-1.1-SNAPSHOT.jar
